@@ -79,7 +79,9 @@ for i, file_info in enumerate(st.session_state.generated_files):
 for i, img_info in enumerate(st.session_state.generated_images):
     with st.chat_message("assistant"):
         st.markdown("🖼️ Image generated earlier:")
-        st.image(img_info["content"], caption=img_info["filename"], use_column_width=True)
+        if st.button("👁️ View Image", key=f"view_img_{i}"):
+            st.image(img_info["content"], caption=img_info["filename"], use_column_width=True)
+
         st.download_button(
             "⬇️ Download Image",
             data=img_info["content"],
@@ -121,11 +123,17 @@ if prompt := st.chat_input("Type a message, ask for a PPT, DOC, or Image ..."):
                 if resp.status_code == 200:
                     img_bytes = resp.content
                     filename = extract_filename_from_cd(resp) or f"image_{len(st.session_state.generated_images)+1}.png"
-                    
-                    # Show image
-                    st.image(img_bytes, caption=filename, use_column_width=True)
 
-                    # Add download button
+                    # Store image
+                    st.session_state.generated_images.append({
+                        "filename": filename,
+                        "content": img_bytes,
+                    })
+
+                    st.success("✅ Image generated!")
+                    if st.button("👁️ View Image", key=f"view_img_now_{filename}"):
+                        st.image(img_bytes, caption=filename, use_column_width=True)
+
                     st.download_button(
                         "⬇️ Download Image",
                         data=img_bytes,
@@ -134,13 +142,7 @@ if prompt := st.chat_input("Type a message, ask for a PPT, DOC, or Image ..."):
                         key=f"download_img_{filename}"
                     )
 
-                    # Store in session history
-                    st.session_state.generated_images.append({
-                        "filename": filename,
-                        "content": img_bytes,
-                    })
-
-                    st.session_state.messages.append(("assistant", "✅ Image generated! See above 👆"))
+                    st.session_state.messages.append(("assistant", "✅ Image generated! Use 'View Image' to preview."))
                 else:
                     st.session_state.messages.append(("assistant", f"❌ Image generation failed: {resp.text}"))
 
@@ -161,13 +163,10 @@ if st.session_state.outline_chat:
 
     render_outline_preview(outline, mode=mode)
 
-    # 📌 Title editing box
     new_title = st.text_input("📌 Edit Title", value=outline.get("title", "Untitled"), key=f"title_{mode}")
-
     feedback_box = st.text_area("✏️ Feedback for outline (optional):", value="", key=f"feedback_chat_{mode}")
     col1, col2 = st.columns(2)
 
-    # Apply Feedback
     with col1:
         if st.button("🔄 Apply Feedback"):
             with st.spinner("Updating outline..."):
@@ -186,7 +185,6 @@ if st.session_state.outline_chat:
                 except Exception as e:
                     st.error(f"❌ Edit error: {e}")
 
-    # Generate Final File
     with col2:
         if st.button(f"✅ Generate {mode.upper()}"):
             with st.spinner(f"Generating {mode.upper()}..."):
@@ -314,9 +312,7 @@ if st.session_state.outline_from_summary:
 
     render_outline_preview(outline_preview, mode=mode)
 
-    # 📌 Editable title for upload flow
     new_title_upload = st.text_input("📌 Edit Title (Upload Flow)", value=outline_preview.get("title", "Untitled"), key=f"title_upload_{mode}")
-
     feedback_box = st.text_area("✏️ Feedback for outline (optional):", value="", key=f"feedback_upload_{mode}")
     col1, col2 = st.columns(2)
 
@@ -365,4 +361,3 @@ if st.session_state.outline_from_summary:
                     })
                 else:
                     st.error(f"❌ Generation failed: {file_resp.status_code} — {file_resp.text}")
-
