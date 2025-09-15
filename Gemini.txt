@@ -382,6 +382,7 @@ def chat_with_doc(req: ChatDocRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat-with-doc failed: {e}")
 
+
 @app.post("/generate-image")
 def generate_image(req: ImageRequest):
     try:
@@ -411,8 +412,7 @@ def generate_image(req: ImageRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image generation error: {e}")
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": MODEL_NAME}
-
-
