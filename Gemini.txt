@@ -1,1 +1,41 @@
-Gemini
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import os, datetime
+from google.cloud import aiplatform
+
+# ---------------- IMAGE GENERATION CONFIG ----------------
+IMAGE_MODEL = "imagegeneration@001"  # Imagen model
+
+class ImageRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate-image")
+def generate_image(req: ImageRequest):
+    try:
+        client = aiplatform.gapic.PredictionServiceClient()
+        endpoint = f"projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/{IMAGE_MODEL}"
+
+        response = client.predict(
+            endpoint=endpoint,
+            instances=[{"prompt": req.prompt, "size": "1024x1024"}],
+        )
+
+        if not response.predictions:
+            raise HTTPException(status_code=500, detail="Image generation failed")
+
+        image_bytes = response.predictions[0]["bytesBase64Encoded"].encode("utf-8")
+
+        # Save image to generated_files
+        output_dir = os.path.join(os.path.dirname(__file__), "generated_files", "images")
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.join(output_dir, f"generated_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+
+        with open(filename, "wb") as f:
+            f.write(base64.b64decode(image_bytes))
+
+        return FileResponse(filename, media_type="image/png", filename=os.path.basename(filename))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation error: {e}")
+
