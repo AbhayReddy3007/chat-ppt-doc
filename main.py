@@ -304,20 +304,24 @@ def generate_ppt(req: GeneratePPTRequest):
         title = clean_title(req.outline.title) or "Presentation"
         points = [{"title": clean_title(s.title), "description": s.description} for s in req.outline.slides]
     else:
-        title = clean_title(generate_title(req.description))  # ✅ Always generate a clean title
+        title = clean_title(generate_title(req.description))
         num_content_slides = extract_slide_count(req.description, default=5)
         points = generate_outline_from_desc(req.description, num_content_slides, mode="ppt")
 
-    filename = f"{sanitize_filename(title)}.pptx"
+    
+    output_dir = os.path.join(os.path.dirname(__file__), "generated_files")
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, f"{sanitize_filename(title)}.pptx")
+
     create_ppt(title, points, filename=filename)
 
     return FileResponse(
         filename,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        filename=filename
+        filename=os.path.basename(filename)
     )
 
-# ---------------- DOC ENDPOINTS ----------------
+
 @app.post("/generate-doc-outline")
 def generate_doc_outline(request: GenerateDocRequest):
     title = generate_title(request.description)  # ✅ Generate clean title for DOC
@@ -348,18 +352,23 @@ def generate_doc(req: GenerateDocRequest):
         title = clean_title(req.outline.title) or "Document"
         points = [{"title": clean_title(s.title), "description": s.description} for s in req.outline.sections]
     else:
-        title = clean_title(generate_title(req.description))  # ✅ Always generate clean title
+        title = clean_title(generate_title(req.description))
         num_sections = extract_slide_count(req.description, default=5)
         points = generate_outline_from_desc(req.description, num_sections, mode="doc")
 
-    filename = f"{sanitize_filename(title)}.docx"
+
+    output_dir = os.path.join(os.path.dirname(__file__), "generated_files")
+    os.makedirs(output_dir, exist_ok=True)
+    filename = os.path.join(output_dir, f"{sanitize_filename(title)}.docx")
+
     create_doc(title, points, filename=filename)
 
     return FileResponse(
         filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename
+        filename=os.path.basename(filename)
     )
+
 
 @app.post("/chat-doc")
 def chat_with_doc(req: ChatDocRequest):
