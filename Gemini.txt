@@ -12,15 +12,15 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 
 # ---------------- CONFIG ----------------
-PROJECT_ID = ""   # fill with your GCP project ID
+PROJECT_ID = ""   # ⚠️ Fill with your GCP Project ID
 REGION = "us-central1"
 
 vertexai.init(project=PROJECT_ID, location=REGION)
 
-MODEL_NAME = "gemini-2.5-pro"
-TEXT_MODEL = GenerativeModel(MODEL_NAME)
+TEXT_MODEL_NAME = "gemini-2.5-pro"
+TEXT_MODEL = GenerativeModel(TEXT_MODEL_NAME)
 
-IMAGE_MODEL = "imagen-4.0-ultra-generate-001"
+IMAGE_MODEL_NAME = "imagen-4.0-ultra-generate-001"
 
 # ---------------- FASTAPI ----------------
 app = FastAPI()
@@ -90,7 +90,7 @@ def call_vertex(prompt: str) -> str:
         response = TEXT_MODEL.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Vertex AI error: {e}")
+        raise HTTPException(status_code=500, detail=f"Vertex AI text generation error: {e}")
 
 def generate_title(summary: str) -> str:
     prompt = f"""Read the following summary and create a short, clear, presentation-style title.
@@ -228,16 +228,16 @@ def save_temp_image(image_bytes, idx, title):
     return filepath
 
 def generate_images_for_points(points, mode="ppt"):
-    """Generate an image per slide/section using Imagen 4."""
+    """Generate one image per slide/section using Imagen."""
     images = []
     for idx, item in enumerate(points, start=1):
         img_prompt = (
-            f"An illustration for a {mode.upper()} titled '{item['title']}'. "
+            f"An illustration for a {mode.upper()} section titled '{item['title']}'. "
             f"Content: {item['description']}. "
             f"Style: professional, modern, clean, infographic look."
         )
         try:
-            img_model = GenerativeModel(IMAGE_MODEL)
+            img_model = GenerativeModel(IMAGE_MODEL_NAME)
             resp = img_model.generate_images(prompt=img_prompt)
 
             if resp.images and hasattr(resp.images[0], "image_bytes"):
@@ -370,7 +370,7 @@ def chat_with_doc(req: ChatDocRequest):
 @app.post("/generate-image")
 def generate_image(req: ImageRequest):
     try:
-        img_model = GenerativeModel(IMAGE_MODEL)
+        img_model = GenerativeModel(IMAGE_MODEL_NAME)
         resp = img_model.generate_images(prompt=req.prompt)
 
         if resp.images and hasattr(resp.images[0], "image_bytes"):
@@ -394,4 +394,4 @@ def generate_image(req: ImageRequest):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_NAME, "image_model": IMAGE_MODEL}
+    return {"status": "ok", "text_model": TEXT_MODEL_NAME, "image_model": IMAGE_MODEL_NAME}
