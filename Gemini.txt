@@ -3,26 +3,24 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import os, re, datetime, tempfile, fitz, docx
+import os, re, datetime, tempfile, fitz, docx, base64
+
 from ppt_generator import create_ppt
 from doc_generator import create_doc
-from google.cloud import aiplatform
-import base64
 
-# ---------------- Vertex AI ----------------
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
 # ---------------- CONFIG ----------------
-PROJECT_ID = ""   
-REGION = "us-central1"               
+PROJECT_ID = ""   # fill with your GCP project ID
+REGION = "us-central1"
 
 vertexai.init(project=PROJECT_ID, location=REGION)
 
-MODEL_NAME = "gemini-2.5-pro"     
-model = GenerativeModel(MODEL_NAME)
+MODEL_NAME = "gemini-2.5-pro"
+TEXT_MODEL = GenerativeModel(MODEL_NAME)
 
-IMAGE_MODEL = "imagen-4.0-ultra-generate-001" 
+IMAGE_MODEL = "imagen-4.0-ultra-generate-001"
 
 # ---------------- FASTAPI ----------------
 app = FastAPI()
@@ -89,7 +87,7 @@ def extract_slide_count(description: str, default: int = 5) -> int:
 
 def call_vertex(prompt: str) -> str:
     try:
-        response = model.generate_content(prompt)
+        response = TEXT_MODEL.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vertex AI error: {e}")
@@ -104,17 +102,6 @@ Summary:
 {summary}
 """
     return call_vertex(prompt).strip()
-
-def infer_title(description: str) -> str:
-    description = description.strip()
-    m = re.search(
-        r"(?:ppt|presentation|doc|document|report)\s+on\s+([A-Za-z0-9\s.&'\-]{2,80})",
-        description,
-        re.IGNORECASE,
-    )
-    if m:
-        return re.sub(r"\s+in\s+\d+\s+(slides?|sections?|pages?)$", "", m.group(1).strip(), flags=re.IGNORECASE)
-    return description.title() or "Untitled"
 
 def parse_points(points_text: str):
     points = []
@@ -230,17 +217,52 @@ def sanitize_filename(name: str) -> str:
 def clean_title(title: str) -> str:
     return re.sub(r"\s*\(.*?\)", "", title).strip()
 
+def save_temp_image(image_bytes, idx, title):
+    output_dir = os.path.join(os.path.dirname(__file__), "generated_files", "images")
+    os.makedirs(output_dir, exist_ok=True)
+    safe_title = re.sub(r'[^A-Za-z0-9_.-]', '_', title)[:30]
+    filename = f"{safe_title}_{idx}.png"
+    filepath = os.path.join(output_dir, filename)
+    with open(filepath, "wb") as f:
+        f.write(image_bytes)
+    return filepath
+
+def generate_images_for_points(points, mode="ppt"):
+    """Generate an image per slide/section using Imagen 4."""
+    images = []
+    for idx, item in enumerate(points, start=1):
+        img_prompt = (
+            f"An illustration for a {mode.upper()} titled '{item['title']}'. "
+            f"Content: {item['description']}. "
+            f"Style: professional, modern, clean, infographic look."
+        )
+        try:
+            img_model = GenerativeModel(IMAGE_MODEL)
+            resp = img_model.generate_images(prompt=img_prompt)
+
+            if resp.images and hasattr(resp.images[0], "image_bytes"):
+                img_bytes = resp.images[0].image_bytes
+            elif resp.images and hasattr(resp.images[0], "bytes_base64_encoded"):
+                img_bytes = base64.b64decode(resp.images[0].bytes_base64_encoded)
+            else:
+                img_bytes = None
+
+            if img_bytes:
+                img_path = save_temp_image(img_bytes, idx, item["title"])
+                images.append(img_path)
+            else:
+                images.append(None)
+        except Exception as e:
+            print(f"⚠️ Image generation failed for {mode} {idx}: {e}")
+            images.append(None)
+    return images
+
 
 # ---------------- ROUTES ----------------
 @app.post("/chat")
 def chat(req: ChatRequest):
-    if "ppt" in req.message.lower() or "presentation" in req.message.lower():
-        return {"response": "📑 I can help you create a PPT! Tell me more details (topic, slides, etc.)."}
-    if "doc" in req.message.lower() or "document" in req.message.lower():
-        return {"response": "📄 I can help you create a Document! Tell me more details (topic, pages, etc.)."}
     reply = call_vertex(req.message)
     return {"response": reply}
-
 
 @app.post("/upload/")
 async def upload(file: UploadFile = File(...)):
@@ -267,32 +289,12 @@ async def upload(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Summarization failed: {e}")
 
-
 @app.post("/generate-ppt-outline")
 def generate_ppt_outline(request: GeneratePPTRequest):
     title = generate_title(request.description)
     num_content_slides = extract_slide_count(request.description, default=5)
     points = generate_outline_from_desc(request.description, num_content_slides, mode="ppt")
     return {"title": title, "slides": points}
-
-
-@app.post("/edit-ppt-outline")
-def edit_ppt_outline(request: EditRequest):
-    outline_text = ""
-    for idx, slide in enumerate(request.outline.slides, start=1):
-        outline_text += f"Slide {idx}: {slide.title}\n"
-        for bullet in slide.description.split("\n"):
-            outline_text += f"- {bullet}\n"
-    prompt = f"""You are editing a PowerPoint outline.
-Here is the outline:
-{outline_text}
-Feedback: "{request.feedback}"
-Update the outline according to the feedback and return in the same format.
-"""
-    points_text = call_vertex(prompt)
-    points = parse_points(points_text)
-    return {"title": request.outline.title, "slides": points}
-
 
 @app.post("/generate-ppt")
 def generate_ppt(req: GeneratePPTRequest):
@@ -304,17 +306,18 @@ def generate_ppt(req: GeneratePPTRequest):
         num_content_slides = extract_slide_count(req.description, default=5)
         points = generate_outline_from_desc(req.description, num_content_slides, mode="ppt")
 
+    images = generate_images_for_points(points, mode="ppt")
+
     output_dir = os.path.join(os.path.dirname(__file__), "generated_files")
     os.makedirs(output_dir, exist_ok=True)
     filename = os.path.join(output_dir, f"{sanitize_filename(title)}.pptx")
 
-    create_ppt(title, points, filename=filename)
+    create_ppt(title, points, filename=filename, images=images)
 
     return FileResponse(filename,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         filename=os.path.basename(filename)
     )
-
 
 @app.post("/generate-doc-outline")
 def generate_doc_outline(request: GenerateDocRequest):
@@ -322,25 +325,6 @@ def generate_doc_outline(request: GenerateDocRequest):
     num_sections = extract_slide_count(request.description, default=5)
     points = generate_outline_from_desc(request.description, num_sections, mode="doc")
     return {"title": title, "sections": points}
-
-
-@app.post("/edit-doc-outline")
-def edit_doc_outline(request: EditDocRequest):
-    outline_text = ""
-    for idx, section in enumerate(request.outline.sections, start=1):
-        outline_text += f"Section {idx}: {section.title}\n"
-        for paragraph in section.description.split("\n"):
-            outline_text += f"{paragraph}\n"
-    prompt = f"""You are editing a Document outline.
-Here is the outline:
-{outline_text}
-Feedback: "{request.feedback}"
-Update the outline according to the feedback and return in the same format.
-"""
-    points_text = call_vertex(prompt)
-    points = parse_points(points_text)
-    return {"title": request.outline.title, "sections": points}
-
 
 @app.post("/generate-doc")
 def generate_doc(req: GenerateDocRequest):
@@ -352,17 +336,18 @@ def generate_doc(req: GenerateDocRequest):
         num_sections = extract_slide_count(req.description, default=5)
         points = generate_outline_from_desc(req.description, num_sections, mode="doc")
 
+    images = generate_images_for_points(points, mode="doc")
+
     output_dir = os.path.join(os.path.dirname(__file__), "generated_files")
     os.makedirs(output_dir, exist_ok=True)
     filename = os.path.join(output_dir, f"{sanitize_filename(title)}.docx")
 
-    create_doc(title, points, filename=filename)
+    create_doc(title, points, filename=filename, images=images)
 
     return FileResponse(filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=os.path.basename(filename)
     )
-
 
 @app.post("/chat-doc")
 def chat_with_doc(req: ChatDocRequest):
@@ -382,38 +367,31 @@ def chat_with_doc(req: ChatDocRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat-with-doc failed: {e}")
 
-
 @app.post("/generate-image")
 def generate_image(req: ImageRequest):
     try:
-        client = aiplatform.gapic.PredictionServiceClient()
-        endpoint = f"projects/{PROJECT_ID}/locations/{REGION}/publishers/google/models/{IMAGE_MODEL}"
+        img_model = GenerativeModel(IMAGE_MODEL)
+        resp = img_model.generate_images(prompt=req.prompt)
 
-        response = client.predict(
-            endpoint=endpoint,
-            instances=[{"prompt": req.prompt, "size": "512x512"}],
-        )
-
-        if not response.predictions:
+        if resp.images and hasattr(resp.images[0], "image_bytes"):
+            img_bytes = resp.images[0].image_bytes
+        elif resp.images and hasattr(resp.images[0], "bytes_base64_encoded"):
+            img_bytes = base64.b64decode(resp.images[0].bytes_base64_encoded)
+        else:
             raise HTTPException(status_code=500, detail="Image generation failed")
 
-        image_bytes = response.predictions[0]["bytesBase64Encoded"].encode("utf-8")
-
-        # Save image to generated_files
         output_dir = os.path.join(os.path.dirname(__file__), "generated_files", "images")
         os.makedirs(output_dir, exist_ok=True)
         filename = os.path.join(output_dir, f"generated_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
 
         with open(filename, "wb") as f:
-            f.write(base64.b64decode(image_bytes))
+            f.write(img_bytes)
 
         return FileResponse(filename, media_type="image/png", filename=os.path.basename(filename))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image generation error: {e}")
 
-
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_NAME}
-
+    return {"status": "ok", "model": MODEL_NAME, "image_model": IMAGE_MODEL}
